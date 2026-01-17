@@ -7,33 +7,51 @@ export default async function handler(req, res) {
         return res.status(400).json({ error: 'Missing url parameter' });
     }
 
+    // 1. Determine Range
+    // Default to 0- if no range header
+    const range = req.headers.range || 'bytes=0-';
+
+    // Parse start and end
+    const matches = range.match(/bytes=(\d+)-(\d*)/);
+    const start = parseInt(matches[1], 10);
+    let end = matches[2] ? parseInt(matches[2], 10) : undefined;
+
+    // 2. Enforce Max Chunk Size (Vercel Limit Avoidance)
+    // 5MB per chunk is safe for 10s timeout
+    const CHUNK_SIZE = 5 * 1024 * 1024;
+    if (!end || (end - start > CHUNK_SIZE)) {
+        end = start + CHUNK_SIZE;
+    }
+
     try {
-        // 1. Prepare headers to send to the source
-        const headers = {};
-        if (req.headers.range) {
-            headers['Range'] = req.headers.range;
+        // 3. Request ONLY the specific chunk from the source
+        const targetHeaders = {
+            'Range': `bytes=${start}-${end}`,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        };
+
+        if (referer) {
+            targetHeaders['Referer'] = referer;
         }
 
-        // Some servers require User-Agent to look like a browser
-        headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36';
-
-        // Inject Custom Referer if provided
-        if (referer && typeof referer === 'string') {
-            headers['Referer'] = referer;
-        }
-
-        // 2. Request the source stream
         const response = await axios({
             method: 'get',
             url: decodeURIComponent(url),
             responseType: 'stream',
-            headers: headers,
-            validateStatus: () => true, // Don't throw on error status
+            headers: targetHeaders,
+            validateStatus: () => true,
         });
 
-        // 3. Set response headers
-        // Forward relevant headers like Content-Range, Content-Length, Content-Type
-        const allowHeaders = ['content-range', 'content-length', 'content-type', 'accept-ranges', 'date'];
+        // 4. Handle Errors from Source
+        if (response.status >= 400) {
+            // Forward error if possible, or fail
+            console.error('Source error:', response.status);
+            return res.status(response.status).send(response.statusText);
+        }
+
+        // 5. Forward Headers properly
+        // crucial: Content-Range, Content-Length, Content-Type
+        const allowHeaders = ['content-range', 'content-type', 'accept-ranges', 'content-length'];
 
         Object.keys(response.headers).forEach(key => {
             if (allowHeaders.includes(key.toLowerCase())) {
@@ -41,23 +59,14 @@ export default async function handler(req, res) {
             }
         });
 
-        // Handle CORS for the player (if playing directly via proxy URL in a player)
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Range');
+        // Always 206 for partial content
+        res.status(206);
 
-        // 4. Send status code (e.g., 206 for partial content)
-        res.status(response.status);
-
-        // 5. Pipe data
+        // 6. Pipe the chunk
         response.data.pipe(res);
 
-        // Handle cleanup
         response.data.on('error', (err) => {
             console.error('Stream error:', err);
-            if (!res.headersSent) {
-                res.status(500).json({ error: 'Stream error' });
-            }
             res.end();
         });
 
@@ -71,6 +80,6 @@ export default async function handler(req, res) {
 
 export const config = {
     api: {
-        responseLimit: false, // Enable streaming larger responses
+        responseLimit: false,
     },
 };
