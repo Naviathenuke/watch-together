@@ -1,77 +1,63 @@
-import { useLayoutEffect, useRef, useState, useEffect } from 'react';
-import { Plyr } from 'plyr-react';
+import { useRef, useState, useEffect, useMemo } from 'react';
+import { usePlyr } from 'plyr-react';
 import 'plyr-react/plyr.css';
-import { ArrowLeft, Maximize, Minimize, Settings, SkipForward, SkipBack } from 'lucide-react';
+import Hls from 'hls.js';
+import { ArrowLeft } from 'lucide-react';
 import { useRouter } from 'next/router';
-
-// Custom Hook for double tap
-function useDoubleIcon(callback, delay = 300) {
-    const lastTap = useRef(0);
-    return () => {
-        const now = Date.now();
-        if (now - lastTap.current < delay) {
-            callback();
-        }
-        lastTap.current = now;
-    };
-}
 
 export default function VideoPlayer({ src, type }) {
     const router = useRouter();
-    const ref = useRef(null);
+    const apiRef = useRef(null);
     const [showControls, setShowControls] = useState(true);
     const controlsTimeout = useRef(null);
 
-    // Determine source type for Plyr
-    // If specific extension is known, use it. Otherwise guess based on content-type or URL.
-    // We'll use the proxy URL.
+    const isHLS = useMemo(() => {
+        return type === 'application/x-mpegURL' || (src && src.includes('.m3u8'));
+    }, [src, type]);
 
-    const plyrSource = {
-        type: 'video',
-        sources: [
-            {
-                src: src, // This should be the /api/proxy?url=... link
-                type: type || 'video/mp4', // Default to mp4 if unknown, or rely on browser
-            },
-        ],
-    };
-
-    const plyrOptions = {
+    const plyrOptions = useMemo(() => ({
         controls: [
-            'play-large',
-            'play',
-            'progress',
-            'current-time',
-            'duration',
-            'mute',
-            'volume',
-            'captions',
-            'settings',
-            'pip',
-            'airplay',
-            'fullscreen',
+            'play-large', 'play', 'progress', 'current-time', 'duration',
+            'mute', 'volume', 'captions', 'settings', 'pip', 'airplay', 'fullscreen',
         ],
         autoplay: true,
         keyboard: { focused: true, global: true },
-    };
+    }), []);
+
+    const plyrSource = useMemo(() => {
+        if (isHLS) return null;
+        return {
+            type: 'video',
+            sources: [{ src, type: type || 'video/mp4' }],
+        };
+    }, [src, type, isHLS]);
+
+    // usePlyr returns a ref that should be attached to the video element
+    const videoRef = usePlyr(apiRef, { source: plyrSource, options: plyrOptions });
+
+    useEffect(() => {
+        if (!isHLS || !src || !videoRef.current) return;
+
+        const video = videoRef.current;
+
+        if (Hls.isSupported()) {
+            const hls = new Hls();
+            hls.loadSource(src);
+            hls.attachMedia(video);
+            return () => {
+                hls.destroy();
+            };
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Native HLS (Safari)
+            video.src = src;
+        }
+    }, [isHLS, src, videoRef]);
 
     // Custom Controls Logic (Overlay)
     const handleScreenClick = () => {
         setShowControls(true);
         if (controlsTimeout.current) clearTimeout(controlsTimeout.current);
         controlsTimeout.current = setTimeout(() => setShowControls(false), 3000);
-    };
-
-    const handleSeekForward = () => {
-        if (ref.current && ref.current.plyr) {
-            ref.current.plyr.forward(10);
-        }
-    };
-
-    const handleSeekBack = () => {
-        if (ref.current && ref.current.plyr) {
-            ref.current.plyr.rewind(10);
-        }
     };
 
     return (
@@ -88,11 +74,9 @@ export default function VideoPlayer({ src, type }) {
 
             {/* Plyr Instance */}
             <div className="w-full h-full flex items-center justify-center">
-                <Plyr ref={ref} source={plyrSource} options={plyrOptions} />
+                {/* We use a raw video tag with the hook instead of the Plyr component for HLS compatibility */}
+                <video ref={videoRef} className="plyr-react plyr" />
             </div>
-
-            {/* Mobile/Touch Overlays for Seeking */}
-            {/* These could be invisible overlays on left/right 25% of screen for double-tap */}
         </div>
     );
 }

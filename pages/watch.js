@@ -44,8 +44,8 @@ export default function Watch() {
                 }
                 setStreamUrl(finalProxyUrl);
 
-                // Fetch metadata (optional)
-                const metaRes = await axios.get(`/api/metadata?url=${encodeURIComponent(v)}`);
+                // Fetch metadata (optional) - use startUrl (the actual stream) instead of the page URL
+                const metaRes = await axios.get(`/api/metadata?url=${encodeURIComponent(startUrl)}`);
                 setMetadata(metaRes.data);
 
             } catch (err) {

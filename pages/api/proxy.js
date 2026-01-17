@@ -1,4 +1,8 @@
 import axios from 'axios';
+import { pipeline } from 'stream';
+import { promisify } from 'util';
+
+const pipelinePromise = promisify(pipeline);
 
 export default async function handler(req, res) {
     const { url, referer } = req.query;
@@ -33,7 +37,10 @@ export default async function handler(req, res) {
 
         // 3. Set response headers
         // Forward relevant headers like Content-Range, Content-Length, Content-Type
-        const allowHeaders = ['content-range', 'content-length', 'content-type', 'accept-ranges', 'date'];
+        const allowHeaders = [
+            'content-range', 'content-length', 'content-type',
+            'accept-ranges', 'date', 'last-modified', 'etag', 'cache-control'
+        ];
 
         Object.keys(response.headers).forEach(key => {
             if (allowHeaders.includes(key.toLowerCase())) {
@@ -44,22 +51,21 @@ export default async function handler(req, res) {
         // Handle CORS for the player (if playing directly via proxy URL in a player)
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Range');
+        res.setHeader('Access-Control-Allow-Headers', 'Range, Accept-Encoding');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Range');
 
         // 4. Send status code (e.g., 206 for partial content)
         res.status(response.status);
 
-        // 5. Pipe data
-        response.data.pipe(res);
-
-        // Handle cleanup
-        response.data.on('error', (err) => {
-            console.error('Stream error:', err);
+        // 5. Pipe data using pipeline for better error handling
+        try {
+            await pipelinePromise(response.data, res);
+        } catch (err) {
+            console.error('Pipeline error:', err.message);
             if (!res.headersSent) {
-                res.status(500).json({ error: 'Stream error' });
+                res.status(500).json({ error: 'Stream pipeline failed' });
             }
-            res.end();
-        });
+        }
 
     } catch (error) {
         console.error('Proxy error:', error.message);
